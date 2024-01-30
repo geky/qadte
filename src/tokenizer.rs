@@ -27,6 +27,8 @@ pub enum Tt {
     Assign,     // =
     AddAssign,  // +=
     SubAssign,  // -=
+    OrAssign,   // |=
+    Lsh,        // <<
     Le,         // <=
     Ge,         // >=
     Lt,         // <
@@ -296,6 +298,8 @@ pub fn tokenize_at<'a>(
             _ if t.matches(r"=")    => t.munch(Tt::Assign),
             _ if t.matches(r"\+=")  => t.munch(Tt::AddAssign),
             _ if t.matches(r"-=")   => t.munch(Tt::SubAssign),
+            _ if t.matches(r"\|=")  => t.munch(Tt::OrAssign),
+            _ if t.matches(r"<<")   => t.munch(Tt::Lsh),
             _ if t.matches(r"<=")   => t.munch(Tt::Le),
             _ if t.matches(r">=")   => t.munch(Tt::Ge),
             _ if t.matches(r"<")    => t.munch(Tt::Lt),

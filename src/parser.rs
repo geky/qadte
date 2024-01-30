@@ -124,6 +124,10 @@ pub fn parse<'a>(
                 p.munch(),
                 parse_expr_required(p)?.swim(&mut p.o),
             ),
+            Some(Tt::Splat) => Expr::Unary(
+                p.munch(),
+                parse_expr_required(p)?.swim(&mut p.o),
+            ),
             Some(Tt::Not) => Expr::Unary(
                 p.munch(),
                 parse_expr_required(p)?.swim(&mut p.o),
@@ -160,11 +164,20 @@ pub fn parse<'a>(
                     p.munch(),
                     parse_expr_required(p)?.swim(&mut p.o),
                 ),
-                Some(Tt::Splat) => Expr::Binary(
-                    lh.swim(&mut p.o),
-                    p.munch(),
-                    parse_expr_required(p)?.swim(&mut p.o),
-                ),
+                Some(Tt::Splat) => {
+                    let tok = p.munch();
+                    match parse_expr(p)? {
+                        Some(rh) => Expr::Binary(
+                            lh.swim(&mut p.o),
+                            tok,
+                            rh.swim(&mut p.o)
+                        ),
+                        None => Expr::Suffnary(
+                            lh.swim(&mut p.o),
+                            tok,
+                        ),
+                    }
+                }
                 Some(Tt::Slash) => Expr::Binary(
                     lh.swim(&mut p.o),
                     p.munch(),
@@ -236,6 +249,16 @@ pub fn parse<'a>(
                     parse_expr_required(p)?.swim(&mut p.o),
                 ),
                 Some(Tt::SubAssign) => Expr::Binary(
+                    lh.swim(&mut p.o),
+                    p.munch(),
+                    parse_expr_required(p)?.swim(&mut p.o),
+                ),
+                Some(Tt::OrAssign) => Expr::Binary(
+                    lh.swim(&mut p.o),
+                    p.munch(),
+                    parse_expr_required(p)?.swim(&mut p.o),
+                ),
+                Some(Tt::Lsh) => Expr::Binary(
                     lh.swim(&mut p.o),
                     p.munch(),
                     parse_expr_required(p)?.swim(&mut p.o),

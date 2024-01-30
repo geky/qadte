@@ -41,6 +41,7 @@ fn edit<'b, 'a>(
     o: &mut Pool<'b>,
     expr: Expr<'b, 'a>
 ) -> Result<Expr<'b, 'a>, anyhow::Error> {
+    // lfsr_data_t
     if let
         index@Expr::Index(
             Expr::Decl(
@@ -57,16 +58,18 @@ fn edit<'b, 'a>(
         ]));
     }
 
+    // lfsr_btree_get
     if let
         Expr::Binary(
             Expr::Call(
-                Expr::Sym(sym_@Token{tok: "lfsr_rbyd_get", ..}),
+                Expr::Sym(sym_@Token{tok: "lfsr_btree_get", ..}),
                 lp,
                 &[
                     lfs,
-                    rbyd,
-                    rid,
+                    btree,
+                    bid,
                     tag,
+                    weight,
                     buffer,
                     size
                 ],
@@ -86,17 +89,14 @@ fn edit<'b, 'a>(
         let mut list_ = vec![];
         list_.push(Expr::Binary(
             Expr::Call(
-                sym("lfsr_rbyd_lookup").lws_(o, sym_.lws).swim(o),
+                sym("lfsr_btree_lookup").lws_(o, sym_.lws).swim(o),
                 *lp,
                 [
                     lfs,
-                    rbyd,
-                    rid,
+                    btree,
+                    bid,
                     tag,
-                    (Some(match rh {
-                        Left(_) => sym("&data").lws_(o, " "),
-                        Right(_) => sym("&data").indent(o, sym_.col-1+8),
-                    }), None)
+                    (Some(sym("&data").lws_(o, " ")), None)
                 ].swim(o),
                 *rp,
             ).swim(o),
@@ -127,6 +127,176 @@ fn edit<'b, 'a>(
 
         return Ok(span(o, &list_));
     }
+
+    // lfsr_btree_push
+    if let
+        Expr::Call(
+            Expr::Sym(sym_@Token{tok: "lfsr_btree_push", ..}),
+            lp,
+            &[
+                lfs,
+                btree,
+                bid,
+                (Some(tag), _),
+                (Some(weight), _),
+                (Some(data), _)
+            ],
+            rp,
+        ) = expr
+    {
+        return Ok(Expr::Call(
+            sym("lfsr_btree_commit").lws_(o, sym_.lws).col_(o, sym_.col).swim(o),
+            lp,
+            [
+                lfs,
+                btree,
+                bid,
+                (Some(Expr::Call(
+                    sym("LFSR_ATTRS").lws_(o, " ").swim(o),
+                    tok("("),
+                    [
+                        (Some(Expr::Call(
+                            sym("LFSR_ATTR").swim(o),
+                            tok("("),
+                            [
+                                (Some(Expr::Call(
+                                    sym("TAG").swim(o),
+                                    tok("("),
+                                    [(Some(tag.lws_(o, "")), None)].swim(o),
+                                    tok(")")
+                                )), Some(tok(","))),
+                                (Some(Expr::Unary(
+                                    tok("+").lws_(" "),
+                                    weight.lws_(o, "").swim(o)
+                                )), Some(tok(","))),
+                                (Some(Expr::Call(
+                                    sym("DATA").lws_(o, " ").swim(o),
+                                    tok("("),
+                                    [(Some(tag.lws_(o, "")), None)].swim(o),
+                                    tok(")")
+                                )), None)
+                            ].swim(o),
+                            tok(")")
+                        )), None)
+                    ].swim(o),
+                    tok(")")
+                )), None)
+            ].swim(o),
+            rp,
+        ));
+    }
+
+    // fix indention issues
+    if let
+        Expr::Binary(
+            Expr::Call(
+                sym_@Expr::Sym(Token{tok: "lfsr_btree_commit", ..}),
+                lp,
+                &[
+                    lfs,
+                    btree,
+                    bid,
+                    (Some(Expr::Call(
+                        sym__@Expr::Sym(Token{tok: "LFSR_ATTRS", ..}),
+                        lp_,
+                        &[
+                            (Some(first), comma_),
+                            ref rest@..
+                        ],
+                        rp_
+                    )), comma)
+                ],
+                rp,
+            ),
+            arrow@Token{tt: Tt::BigArrow, ..},
+            rh
+        ) = expr
+    {
+        if first.lws() == "" {
+            return Ok(Expr::Binary(
+                Expr::Call(
+                    sym_,
+                    *lp,
+                    [
+                        lfs,
+                        btree,
+                        bid,
+                        (Some(Expr::Call(
+                            sym__,
+                            lp_,
+                            {
+                                let mut v = vec![
+                                    (Some(first.indent(o, sym_.col()-1+8)), comma_),
+                                ];
+                                v.extend(rest);
+                                v
+                            }.swim(o),
+                            rp_
+                        )), comma)
+                    ].swim(o),
+                    *rp,
+                ).swim(o),
+                arrow,
+                rh
+            ));
+        }
+    }
+
+    if let
+        Expr::Binary(
+            lh,
+            eq@Token{tt: Tt::Assign, ..},
+            Expr::Call(
+                sym_@Expr::Sym(Token{tok: "lfsr_btree_commit", ..}),
+                lp,
+                &[
+                    lfs,
+                    btree,
+                    bid,
+                    (Some(Expr::Call(
+                        sym__@Expr::Sym(Token{tok: "LFSR_ATTRS", ..}),
+                        lp_,
+                        &[
+                            (Some(first), comma_),
+                            ref rest@..
+                        ],
+                        rp_
+                    )), comma)
+                ],
+                rp,
+            )
+        ) = expr
+    {
+        if first.lws() == "" {
+            return Ok(Expr::Binary(
+                lh,
+                eq,
+                Expr::Call(
+                    sym_,
+                    *lp,
+                    [
+                        lfs,
+                        btree,
+                        bid,
+                        (Some(Expr::Call(
+                            sym__,
+                            lp_,
+                            {
+                                let mut v = vec![
+                                    (Some(first.indent(o, lh.col()-1+8)), comma_),
+                                ];
+                                v.extend(rest);
+                                v
+                            }.swim(o),
+                            rp_
+                        )), comma)
+                    ].swim(o),
+                    *rp,
+                ).swim(o)
+            ));
+        }
+    }
+        
 
     Ok(expr)
 }
