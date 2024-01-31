@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
+#![allow(non_shorthand_field_patterns)]
 
 use structopt::StructOpt;
 use anyhow;
@@ -16,6 +17,7 @@ use std::io::BufReader;
 use std::io::BufRead;
 use std::io::BufWriter;
 use std::io::Write;
+use std::mem::transmute;
 
 
 // The actual parser is over here
@@ -43,18 +45,15 @@ fn edit<'b, 'a>(
 ) -> Result<Expr<'b, 'a>, anyhow::Error> {
     // lfsr_data_t
     if let
-        index@Expr::Index(
-            Expr::Decl(
-                Expr::Sym(Token{tok: "uint8_t", ..}),
-                Token{tok: "buffer", ..},
-            ),
-            ..
+        expr@Expr::Decl(
+            Expr::Sym(Token{tok: "lfs_size_t", ..}),
+            Token{tok: "weight_", ..},
         ) = expr
     {
-        let data = sym("lfsr_data_t data").indent(o, index.col()-1);
+        let data = sym("lfsr_data_t data_").indent(o, expr.col()-1);
         return Ok(span(o, &[
+            expr,
             data,
-            index,
         ]));
     }
 
@@ -96,7 +95,8 @@ fn edit<'b, 'a>(
                     btree,
                     bid,
                     tag,
-                    (Some(sym("&data").lws_(o, " ")), None)
+                    weight,
+                    (Some(sym("&data_").lws_(o, " ")), None)
                 ].swim(o),
                 *rp,
             ).swim(o),
@@ -114,7 +114,7 @@ fn edit<'b, 'a>(
                     *lp,
                     [
                         (Some(sym("&lfs")), Some(tok(","))),
-                        (Some(sym("&data").lws_(o, " ")), Some(tok(","))),
+                        (Some(sym("&data_").lws_(o, " ")), Some(tok(","))),
                         buffer,
                         size,
                     ].swim(o),
@@ -129,6 +129,66 @@ fn edit<'b, 'a>(
     }
 
     // lfsr_btree_push
+    fn strip<'b, 'a>(
+        o: &mut Pool<'b>,
+        expr: Expr<'b, 'a>,
+        prefix: &'static str
+    ) -> Expr<'b, 'a> {
+        match expr {
+            Expr::Call(
+                Expr::Sym(Token{tok: tok, ..}),
+                lp,
+                args,
+                rp,
+            ) if tok.starts_with(prefix) => {
+                Expr::Call(
+                    sym(tok.strip_prefix(prefix).unwrap()).swim(o),
+                    lp,
+                    args,
+                    rp
+                )
+            }
+            Expr::Sym(Token{tok: tok, ..}) if tok.starts_with(prefix) => {
+                sym(tok.strip_prefix(prefix).unwrap())
+            }
+            expr => expr,
+        }
+    }
+
+    fn prefix<'b, 'a>(
+        o: &mut Pool<'b>,
+        expr: Expr<'b, 'a>,
+        prefix: &'static str,
+        escape: &'static str,
+    ) -> Expr<'b, 'a> {
+        match expr {
+            Expr::Call(
+                Expr::Sym(Token{tok: tok, ..}),
+                lp,
+                args,
+                rp,
+            ) if tok.starts_with(prefix) => {
+                Expr::Call(
+                    sym(tok.strip_prefix(prefix).unwrap()).swim(o),
+                    lp,
+                    args,
+                    rp
+                )
+            }
+            Expr::Sym(Token{tok: tok, ..}) if tok.starts_with(prefix) => {
+                sym(tok.strip_prefix(prefix).unwrap())
+            }
+            expr => {
+                Expr::Call(
+                    sym(escape).swim(o),
+                    tok("("),
+                    [(Some(expr), None)].swim(o),
+                    tok(")")
+                )
+            }
+        }
+    }
+
     if let
         Expr::Call(
             Expr::Sym(sym_@Token{tok: "lfsr_btree_push", ..}),
@@ -136,7 +196,7 @@ fn edit<'b, 'a>(
             &[
                 lfs,
                 btree,
-                bid,
+                (Some(bid), _),
                 (Some(tag), _),
                 (Some(weight), _),
                 (Some(data), _)
@@ -150,7 +210,7 @@ fn edit<'b, 'a>(
             [
                 lfs,
                 btree,
-                bid,
+                (Some(bid.lws_(o, " ")), Some(tok(","))),
                 (Some(Expr::Call(
                     sym("LFSR_ATTRS").lws_(o, " ").swim(o),
                     tok("("),
@@ -159,26 +219,287 @@ fn edit<'b, 'a>(
                             sym("LFSR_ATTR").swim(o),
                             tok("("),
                             [
-                                (Some(Expr::Call(
-                                    sym("TAG").swim(o),
-                                    tok("("),
-                                    [(Some(tag.lws_(o, "")), None)].swim(o),
-                                    tok(")")
-                                )), Some(tok(","))),
+                                (Some(
+                                    prefix(o, tag, "LFSR_TAG_", "TAG").lws_(o, "")
+                                ), Some(tok(","))),
                                 (Some(Expr::Unary(
                                     tok("+").lws_(" "),
                                     weight.lws_(o, "").swim(o)
                                 )), Some(tok(","))),
-                                (Some(Expr::Call(
-                                    sym("DATA").lws_(o, " ").swim(o),
-                                    tok("("),
-                                    [(Some(tag.lws_(o, "")), None)].swim(o),
-                                    tok(")")
-                                )), None)
+                                (Some(
+                                    prefix(o, data, "LFSR_DATA_", "DATA").lws_(o, " ")
+                                ), None)
                             ].swim(o),
                             tok(")")
                         )), None)
                     ].swim(o),
+                    tok(")")
+                )), None)
+            ].swim(o),
+            rp,
+        ));
+    }
+
+    // lfsr_btree_set
+    if let
+        Expr::Call(
+            Expr::Sym(sym_@Token{tok: "lfsr_btree_set", ..}),
+            lp,
+            &[
+                lfs,
+                btree,
+                (Some(bid), _),
+                (Some(tag), _),
+                (Some(delta), _),
+                (Some(data), _)
+            ],
+            rp,
+        ) = expr
+    {
+        let mut list_ = vec![];
+        list_.push((Some(Expr::Call(
+            sym("LFSR_ATTR").swim(o),
+            tok("("),
+            [
+                (Some(Expr::Call(
+                    sym("SUBMASK").swim(o),
+                    tok("("),
+                    [(Some(prefix(o, tag, "LFSR_TAG_", "TAG").lws_(o, "")), None)].swim(o),
+                    tok(")")
+                )), Some(tok(","))),
+                (Some(
+                    sym("0").lws_(o, " ")
+                ), Some(tok(","))),
+                (Some(
+                    prefix(o, data, "LFSR_DATA_", "DATA").lws_(o, " ")
+                ), None)
+            ].swim(o),
+            tok(")")
+        )), None));
+
+        match delta {
+            Expr::Lit(Token{tok: "0", ..}) => {}
+            _ => {
+                list_.last_mut().unwrap().1 = Some(tok(","));
+                list_.push((Some(Expr::Call(
+                    sym("LFSR_ATTR").swim(o),
+                    tok("("),
+                    [
+                        (Some(
+                            sym("GROW")
+                        ), Some(tok(","))),
+                        (Some(
+                            delta.lws_(o, " ")
+                        ), Some(tok(","))),
+                        (Some(
+                            sym("NULL()").lws_(o, " ")
+                        ), None)
+                    ].swim(o),
+                    tok(")")
+                )), None));
+            }
+        }
+
+        return Ok(Expr::Call(
+            sym("lfsr_btree_commit").lws_(o, sym_.lws).col_(o, sym_.col).swim(o),
+            lp,
+            [
+                lfs,
+                btree,
+                (Some(bid.lws_(o, " ")), Some(tok(","))),
+                (Some(Expr::Call(
+                    sym("LFSR_ATTRS").lws_(o, " ").swim(o),
+                    tok("("),
+                    list_.swim(o),
+                    tok(")")
+                )), None)
+            ].swim(o),
+            rp,
+        ));
+    }
+
+    // lfsr_btree_pop
+    if let
+        Expr::Call(
+            Expr::Sym(sym_@Token{tok: "lfsr_btree_pop", ..}),
+            lp,
+            &[
+                lfs,
+                btree,
+                (Some(bid), _),
+                (Some(delta), _),
+            ],
+            rp,
+        ) = expr
+    {
+        let mut list_ = vec![];
+        list_.push((Some(Expr::Call(
+            sym("LFSR_ATTR").swim(o),
+            tok("("),
+            [
+                (Some(
+                    sym("RM")
+                ), Some(tok(","))),
+                (Some(
+                    delta.lws_(o, " ")
+                ), Some(tok(","))),
+                (Some(
+                    sym("NULL()").lws_(o, " ")
+                ), None)
+            ].swim(o),
+            tok(")")
+        )), None));
+
+        return Ok(Expr::Call(
+            sym("lfsr_btree_commit").lws_(o, sym_.lws).col_(o, sym_.col).swim(o),
+            lp,
+            [
+                lfs,
+                btree,
+                (Some(bid.lws_(o, " ")), Some(tok(","))),
+                (Some(Expr::Call(
+                    sym("LFSR_ATTRS").lws_(o, " ").swim(o),
+                    tok("("),
+                    list_.swim(o),
+                    tok(")")
+                )), None)
+            ].swim(o),
+            rp,
+        ));
+    }
+
+    // lfsr_btree_split
+    if let
+        Expr::Call(
+            Expr::Sym(sym_@Token{tok: "lfsr_btree_split", ..}),
+            lp,
+            &[
+                lfs,
+                btree,
+                (Some(bid), _),
+                (Some(name), _),
+                (Some(tag1), _),
+                (Some(delta1), _),
+                (Some(data1), _),
+                (Some(tag2), _),
+                (Some(delta2), _),
+                (Some(data2), _),
+            ],
+            rp,
+        ) = expr
+    {
+        let mut list_ = vec![];
+        match delta1 {
+            Expr::Lit(Token{tok: "0", ..}) => {}
+            _ => {
+                list_.push((Some(Expr::Call(
+                    sym("LFSR_ATTR").swim(o),
+                    tok("("),
+                    [
+                        (Some(
+                            sym("GROW")
+                        ), Some(tok(","))),
+                        (Some(
+                            delta1.lws_(o, " ")
+                        ), Some(tok(","))),
+                        (Some(
+                            sym("NULL()").lws_(o, " ")
+                        ), None)
+                    ].swim(o),
+                    tok(")")
+                )), None));
+            }
+        }
+
+        list_.last_mut().map(|last| last.1 = Some(tok(",")));
+        list_.push((Some(Expr::Call(
+            sym("LFSR_ATTR").swim(o),
+            tok("("),
+            [
+                (Some(
+                    prefix(o, tag1, "LFSR_TAG_", "TAG").lws_(o, "")
+                ), Some(tok(","))),
+                (Some(
+                    sym("0").lws_(o, " ")
+                ), Some(tok(","))),
+                (Some(
+                    prefix(o, data1, "LFSR_DATA_", "DATA").lws_(o, " ")
+                ), None)
+            ].swim(o),
+            tok(")")
+        )), None));
+
+        match name {
+            Expr::Call(
+                Expr::Sym(Token{tok: "LFSR_DATA_NULL", ..}),
+                ..
+            ) => {
+                list_.last_mut().map(|last| last.1 = Some(tok(",")));
+                list_.push((Some(Expr::Call(
+                    sym("LFSR_ATTR").swim(o),
+                    tok("("),
+                    [
+                        (Some(
+                            prefix(o, tag2, "LFSR_TAG_", "TAG").lws_(o, "")
+                        ), Some(tok(","))),
+                        (Some(
+                            delta2.lws_(o, " ")
+                        ), Some(tok(","))),
+                        (Some(
+                            prefix(o, data2, "LFSR_DATA_", "DATA").lws_(o, " ")
+                        ), None)
+                    ].swim(o),
+                    tok(")")
+                )), None));
+            }
+            _ => {
+                list_.last_mut().map(|last| last.1 = Some(tok(",")));
+                list_.push((Some(Expr::Call(
+                    sym("LFSR_ATTR").swim(o),
+                    tok("("),
+                    [
+                        (Some(
+                            sym("NAME")
+                        ), Some(tok(","))),
+                        (Some(
+                            delta2.lws_(o, " ")
+                        ), Some(tok(","))),
+                        (Some(
+                            prefix(o, name, "LFSR_DATA_", "DATA").lws_(o, " ")
+                        ), None)
+                    ].swim(o),
+                    tok(")")
+                )), Some(tok(","))));
+                list_.push((Some(Expr::Call(
+                    sym("LFSR_ATTR").swim(o),
+                    tok("("),
+                    [
+                        (Some(
+                            prefix(o, tag2, "LFSR_TAG_", "TAG").lws_(o, "")
+                        ), Some(tok(","))),
+                        (Some(
+                            sym("0").lws_(o, " ")
+                        ), Some(tok(","))),
+                        (Some(
+                            prefix(o, data2, "LFSR_DATA_", "DATA").lws_(o, " ")
+                        ), None)
+                    ].swim(o),
+                    tok(")")
+                )), None));
+            }
+        }
+
+        return Ok(Expr::Call(
+            sym("lfsr_btree_commit").lws_(o, sym_.lws).col_(o, sym_.col).swim(o),
+            lp,
+            [
+                lfs,
+                btree,
+                (Some(bid.lws_(o, " ")), Some(tok(","))),
+                (Some(Expr::Call(
+                    sym("LFSR_ATTRS").lws_(o, " ").swim(o),
+                    tok("("),
+                    list_.swim(o),
                     tok(")")
                 )), None)
             ].swim(o),
@@ -199,9 +520,9 @@ fn edit<'b, 'a>(
                     (Some(Expr::Call(
                         sym__@Expr::Sym(Token{tok: "LFSR_ATTRS", ..}),
                         lp_,
-                        &[
-                            (Some(first), comma_),
-                            ref rest@..
+                        attrs@&[
+                            (Some(first), _),
+                            ..
                         ],
                         rp_
                     )), comma)
@@ -225,11 +546,14 @@ fn edit<'b, 'a>(
                             sym__,
                             lp_,
                             {
-                                let mut v = vec![
-                                    (Some(first.indent(o, sym_.col()-1+8)), comma_),
-                                ];
-                                v.extend(rest);
-                                v
+                                let mut list_ = vec![];
+                                for attr in attrs {
+                                    match attr {
+                                        (Some(attr), comma_) => list_.push((Some(attr.indent(o, sym_.col()-1+8)), *comma_)),
+                                        attr => list_.push(*attr),
+                                    }
+                                }
+                                list_
                             }.swim(o),
                             rp_
                         )), comma)
@@ -256,9 +580,9 @@ fn edit<'b, 'a>(
                     (Some(Expr::Call(
                         sym__@Expr::Sym(Token{tok: "LFSR_ATTRS", ..}),
                         lp_,
-                        &[
-                            (Some(first), comma_),
-                            ref rest@..
+                        attrs@&[
+                            (Some(first), _),
+                            ..
                         ],
                         rp_
                     )), comma)
@@ -282,11 +606,14 @@ fn edit<'b, 'a>(
                             sym__,
                             lp_,
                             {
-                                let mut v = vec![
-                                    (Some(first.indent(o, lh.col()-1+8)), comma_),
-                                ];
-                                v.extend(rest);
-                                v
+                                let mut list_ = vec![];
+                                for attr in attrs {
+                                    match attr {
+                                        (Some(attr), comma_) => list_.push((Some(attr.indent(o, lh.col()-1+8)), *comma_)),
+                                        attr => list_.push(*attr),
+                                    }
+                                }
+                                list_
                             }.swim(o),
                             rp_
                         )), comma)
