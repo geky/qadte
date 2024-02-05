@@ -2,6 +2,8 @@
 use either::{Left, Right};
 
 use std::ops::Deref;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use crate::rc::Rc;
 use crate::rc::Transborrow;
@@ -11,95 +13,145 @@ use crate::tokenizer::tok;
 use crate::parser::{Expr, Expr_};
 use crate::parser::sym;
 use crate::parser::span;
-
+use crate::parser::Map;
 
 // edit the tree
 pub fn edit<'a>(expr: Expr<'a>) -> Result<Expr<'a>, anyhow::Error> {
-    if let
-        index@Expr_::Index(
-            Expr_::Decl(
-                Expr_::Sym(Token{tok: "uint8_t", ..}),
-                Token{tok: "buffer", ..},
-            ),
-            ..
-        ) = expr.borrow()
-    {
-        let data = sym("lfsr_data_t data").indent(index.col()-1);
-        return Ok(span(&[
-            data,
-            index.into(),
-        ]));
-    }
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
 
+    // <expr> = <commit>(<args>, LFS_MKATTRS(*), <args>);
     if let
         Expr_::Binary(
+            ret,
+            eq@Token{tt: Tt::Assign, ..},
             Expr_::Call(
-                Expr_::Sym(sym_@Token{tok: "lfsr_rbyd_get", ..}),
+                commit,
                 lp,
-                &[
-                    (Some(lfs),     c0),
-                    (Some(rbyd),    c1),
-                    (Some(rid),     c2),
-                    (Some(tag),     c3),
-                    (Some(buffer),  c4),
-                    (Some(size),    c5),
-                ],
+                args,
                 rp,
-            ),
-            arrow@Token{tt: Tt::BigArrow, ..},
-            rh
+            )
         ) = expr.borrow()
     {
-        // left => no error
-        // right => error
-        let rh = match rh {
-            rh@Expr_::Sym(sym_) if sym_.tok.starts_with("LFS_ERR_") => Right(rh),
-            rh => Left(rh),
-        };
+        for i in 0..args.len() {
+            if let
+                (Some(Expr_::Call(
+                    Expr_::Sym(Token{tok: "LFS_MKATTRS", ..}),
+                    lp_,
+                    attrs,
+                    rp_,
+                )), c@_) = args[i]
+            {
+                let count = attrs.len();
+                let unique = COUNTER.fetch_add(1, Ordering::AcqRel);
 
-        let mut list_ = vec![];
-        list_.push(Expr::Binary(
-            Rc::new(Expr::Call(
-                Rc::new(sym("lfsr_rbyd_lookup").lws_(sym_.lws)),
-                *lp,
-                Rc::from(vec![
-                    (Some(lfs.into()),  c0),
-                    (Some(rbyd.into()), c1),
-                    (Some(rid.into()),  c2),
-                    (Some(tag.into()),  c3),
-                    (Some(match rh {
-                        Left(_) => sym("&data").lws_(" "),
-                        Right(_) => sym("&data").indent(sym_.col-1+8),
-                    }), None)
-                ]),
-                *rp,
-            )),
-            arrow.lws_(" "),
-            Rc::new(match rh {
-                Left(_) => sym("0").lws_(" "),
-                Right(rh) => rh.deref().into(),
-            }),
-        ));
+                return Ok(span(&[
+                    Expr::Binary(
+                        Rc::new(sym(format!("struct lfs_mattr attrs{}[{}]", unique, count))),
+                        tok("=").lws_(" "),
+                        Rc::new(Expr::Squiggle(
+                            tok("{").lws_(" "),
+                            Rc::from(attrs.map(|tok: Token<'_>| {
+                                if tok.lws.starts_with("\n") {
+                                    tok.indent(tok.col-1-4)
+                                } else {
+                                    tok
+                                }
+                            })),
+                            tok("}").indent(ret.col()-1),
+                        )),
+                    ).lws_(ret.lws()),
 
-        if let Left(rh) = rh {
-            list_.push(Expr::Binary(
-                Rc::new(Expr::Call(
-                    Rc::new(sym("lfsr_data_read").indent(sym_.col-1)),
-                    *lp,
-                    Rc::from(vec![
-                        (Some(sym("&lfs")), Some(tok(","))),
-                        (Some(sym("&data").lws_(" ")), Some(tok(","))),
-                        (Some(buffer.into()),   c4),
-                        (Some(size.into()),     c5),
-                    ]),
-                    *rp
-                )),
-                tok("=>").lws_(" "),
-                Rc::new(rh.deref().into()),
-            ));
+                    Expr::Binary(
+                        Rc::new(ret.deref().into()),
+                        *eq,
+                        Rc::new(Expr::Call(
+                            Rc::new(commit.deref().into()),
+                            *lp,
+                            Rc::from(
+                                args[..i].iter()
+                                    .map(|(arg, c)| (arg.map(|arg| Expr::from(arg)), *c))
+                                    .chain([
+                                        (Some(sym(format!("attrs{}", unique)).lws_(" ")), Some(tok(","))),
+                                        (Some(sym(format!("{}", count)).lws_(" ")), c)
+                                    ])
+                                    .chain(
+                                        args[i+1..].iter()
+                                            .map(|(arg, c)| (arg.map(|arg| Expr::from(arg)), *c))
+                                    )
+                                    .collect::<Vec<_>>()
+                            ),
+                            *rp,
+                        ))
+                    ).indent(ret.col()-1)
+                ]));
+            }
         }
+    }
 
-        return Ok(span(&list_));
+    // return <commit>(<args>, LFS_MKATTRS(*), <args>);
+    if let
+        ret@Expr_::Return(
+            ret_,
+            Some(Expr_::Call(
+                commit,
+                lp,
+                args,
+                rp,
+            ))
+        ) = expr.borrow()
+    {
+        for i in 0..args.len() {
+            if let
+                (Some(Expr_::Call(
+                    Expr_::Sym(Token{tok: "LFS_MKATTRS", ..}),
+                    lp_,
+                    attrs,
+                    rp_,
+                )), c@_) = args[i]
+            {
+                let count = attrs.len();
+
+                return Ok(span(&[
+                    Expr::Binary(
+                        Rc::new(sym(format!("struct lfs_mattr attrs_[{}]", count))),
+                        tok("=").lws_(" "),
+                        Rc::new(Expr::Squiggle(
+                            tok("{").lws_(" "),
+                            Rc::from(attrs.map(|tok: Token<'_>| {
+                                if tok.lws.starts_with("\n") {
+                                    tok.indent(tok.col-1-4)
+                                } else {
+                                    tok
+                                }
+                            })),
+                            tok("}").indent(ret.col()-1),
+                        )),
+                    ).lws_(ret.lws()),
+
+                    Expr::Return(
+                        *ret_,
+                        Some(Rc::new(Expr::Call(
+                            Rc::new(commit.deref().into()),
+                            *lp,
+                            Rc::from(
+                                args[..i].iter()
+                                    .map(|(arg, c)| (arg.map(|arg| Expr::from(arg)), *c))
+                                    .chain([
+                                        (Some(sym("attrs_").lws_(" ")), Some(tok(","))),
+                                        (Some(sym(format!("{}", count)).lws_(" ")), c)
+                                    ])
+                                    .chain(
+                                        args[i+1..].iter()
+                                            .map(|(arg, c)| (arg.map(|arg| Expr::from(arg)), *c))
+                                    )
+                                    .collect::<Vec<_>>()
+                            ),
+                            *rp,
+                        )))
+                    ).indent(ret.col()-1)
+                ]));
+            }
+        }
     }
 
     Ok(expr)
